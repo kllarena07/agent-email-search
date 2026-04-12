@@ -12,4 +12,4 @@ RUN pnpm install --frozen-lockfile
 
 RUN pnpm build
 
-CMD ["bash", "/app/start.sh"]
+CMD ["bash", "/app/start-threads.sh"]
