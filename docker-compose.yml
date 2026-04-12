@@ -1,0 +1,8 @@
+services:
+  email-search:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+    working_dir: /app

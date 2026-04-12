@@ -5,15 +5,25 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc",
+    "start": "bash start.sh",
+    "fetch": "node fetch-emails.js",
+    "search": "node dist/search.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.28.2",
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.104",
     "dotenv": "^17.4.2",
     "mailparser": "^3.9.8",
-    "node-imap": "^0.9.6"
+    "node-imap": "^0.9.6",
+    "turndown": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
   }
 }
