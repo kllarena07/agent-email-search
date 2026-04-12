@@ -1,0 +1,9 @@
+services:
+  email-thread-search:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+    working_dir: /app
+    command: ["bash", "/app/start-threads.sh"]

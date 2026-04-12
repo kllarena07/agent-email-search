@@ -2,3 +2,5 @@
 node_modules
 emails/
 dist/
+.DS_Store
+.env.old

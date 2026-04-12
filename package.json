@@ -9,6 +9,7 @@
     "build": "tsc",
     "start": "bash start.sh",
     "fetch": "node fetch-emails.js",
+    "fetch-threads": "node fetch-threads.js",
     "search": "node dist/search.js"
   },
   "keywords": [],
