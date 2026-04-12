@@ -5,6 +5,9 @@ import TurndownService from 'turndown';
 import fs from 'fs';
 import path from 'path';
 
+const BATCH_SIZE = 100;
+const CHECKPOINT_FILE = 'threads-progress.json';
+
 const imapConfig = {
   user: process.env.GMAIL_EMAIL,
   password: process.env.GMAIL_APP_PASSWORD,
@@ -37,23 +40,17 @@ function sanitizeFilename(filename) {
 function setupThreadsDirectory() {
   const threadsDir = 'threads';
   
-  if (fs.existsSync(threadsDir)) {
-    fs.rmSync(threadsDir, { recursive: true, force: true });
+  if (!fs.existsSync(threadsDir)) {
+    fs.mkdirSync(threadsDir, { recursive: true });
   }
-  
-  fs.mkdirSync(threadsDir, { recursive: true });
   
   return threadsDir;
 }
 
-function createThreadDirectory(threadId, subject) {
+function getThreadPath(threadId, subject) {
   const safeSubject = sanitizeFilename(subject);
   const dirName = `${safeSubject}-${threadId}`;
-  const threadPath = path.join('threads', dirName);
-  
-  fs.mkdirSync(threadPath, { recursive: true });
-  
-  return threadPath;
+  return path.join('threads', dirName);
 }
 
 function extractParticipants(messages) {
@@ -121,9 +118,11 @@ function writeThreadMetadata(threadId, messages, threadPath) {
   const participants = extractParticipants(messages);
   const messageTypes = getMessageTypes(messages);
   const dateRange = getDateRange(messages);
+  const subject = messages[0]?.subject || 'No Subject';
   
   const metadata = {
     threadId,
+    subject,
     totalMessages: messages.length,
     dateRange,
     participants,
@@ -134,6 +133,22 @@ function writeThreadMetadata(threadId, messages, threadPath) {
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
   
   return metadata;
+}
+
+function updateThreadMetadata(existingMetadata, newMessages) {
+  const allMessages = [...existingMetadata.allMessages, ...newMessages];
+  const participants = extractParticipants(allMessages);
+  const messageTypes = getMessageTypes(allMessages);
+  const dateRange = getDateRange(allMessages);
+  
+  return {
+    threadId: existingMetadata.threadId,
+    subject: existingMetadata.subject,
+    totalMessages: allMessages.length,
+    dateRange,
+    participants,
+    messageTypes
+  };
 }
 
 async function saveMessage(email, messageIndex, totalMessages, metadata, threadPath) {
@@ -288,174 +303,265 @@ async function fetchWithRetry(imap, uids, options, retries = MAX_RETRIES) {
   }
 }
 
-async function verifyThreadCompleteness(imap, threadId, existingEmails) {
-  return new Promise((resolve, reject) => {
-    imap.search([['X-GM-THRID', threadId]], async (err, results) => {
-      if (err) {
-        console.error(`Error searching for thread ${threadId}:`, err);
-        resolve(existingEmails);
-        return;
+function validateThreadDirectory(threadPath) {
+  try {
+    const requiredFiles = ['thread-metadata.json'];
+    const files = fs.readdirSync(threadPath);
+    
+    for (const file of requiredFiles) {
+      if (!files.includes(file)) {
+        console.error(`  ✗ Missing required file: ${file}`);
+        return false;
       }
-      
-      if (results.length === 0) {
-        resolve(existingEmails);
-        return;
+    }
+    
+    try {
+      const metadataPath = path.join(threadPath, 'thread-metadata.json');
+      JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    } catch {
+      console.error(`  ✗ Invalid thread metadata`);
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error(`  ✗ Validation error: ${error.message}`);
+    return false;
+  }
+}
+
+function getNextMessageNumber(threadPath) {
+  const files = fs.readdirSync(threadPath)
+    .filter(f => f.startsWith('message-') && f.endsWith('.md'))
+    .map(f => parseInt(f.replace('message-', '').replace('.md', '')))
+    .filter(n => !isNaN(n));
+  
+  return files.length > 0 ? Math.max(...files) + 1 : 1;
+}
+
+function writeNewThread(threadId, messages) {
+  const threadPath = getThreadPath(threadId, messages[0]?.subject);
+  
+  fs.mkdirSync(threadPath, { recursive: true });
+  
+  const metadata = writeThreadMetadata(threadId, messages, threadPath);
+  
+  messages.forEach((email, index) => {
+    saveMessage(email, index + 1, messages.length, metadata, threadPath);
+  });
+  
+  return threadPath;
+}
+
+function updateExistingThread(threadId, newMessages) {
+  const threadPath = getThreadPath(threadId, newMessages[0]?.subject);
+  
+  if (!validateThreadDirectory(threadPath)) {
+    console.error(`  ✗ Skipping corrupt thread ${threadId}`);
+    return { success: false };
+  }
+  
+  const nextMessageNumber = getNextMessageNumber(threadPath);
+  const metadataPath = path.join(threadPath, 'thread-metadata.json');
+  const existingMetadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+  
+  const sortedNewMessages = newMessages.sort((a, b) => {
+    const aDate = a.date ? new Date(a.date) : new Date(0);
+    const bDate = b.date ? new Date(b.date) : new Date(0);
+    return aDate - bDate;
+  });
+  
+  const updatedMetadata = updateThreadMetadata(existingMetadata, sortedNewMessages);
+  fs.writeFileSync(metadataPath, JSON.stringify(updatedMetadata, null, 2));
+  
+  sortedNewMessages.forEach((email, index) => {
+    saveMessage(email, nextMessageNumber + index, updatedMetadata.totalMessages, updatedMetadata, threadPath);
+  });
+  
+  return { success: true, threadPath };
+}
+
+async function processBatch(imap, batchUids) {
+  const messages = await fetchWithRetry(imap, batchUids, {
+    bodies: '',
+    struct: true
+  });
+  
+  const threadGroups = new Map();
+  
+  for (const { parsed, seqno } of messages) {
+    const uid = batchUids[seqno - 1];
+    const email = { ...parsed, uid };
+    
+    const threadId = email.uid['x-gm-thrid'];
+    if (!threadId) continue;
+    
+    if (!threadGroups.has(threadId)) {
+      threadGroups.set(threadId, []);
+    }
+    threadGroups.get(threadId).push(email);
+  }
+  
+  const newThreads = [];
+  const updatedThreads = [];
+  let messagesSaved = 0;
+  
+  for (const [threadId, batchMessages] of threadGroups.entries()) {
+    const threadPath = getThreadPath(threadId, batchMessages[0]?.subject);
+    
+    if (fs.existsSync(threadPath)) {
+      const result = updateExistingThread(threadId, batchMessages);
+      if (result.success) {
+        updatedThreads.push(threadId);
       }
-      
-      const existingUids = new Set(existingEmails.map(email => email.uid));
-      const missingUids = results.filter(uid => !existingUids.has(uid));
-      
-      if (missingUids.length === 0) {
-        resolve(existingEmails);
-        return;
-      }
-      
-      console.log(`  Found ${missingUids.length} additional messages in thread ${threadId}`);
-      
-      try {
-        const additionalMessages = await fetchWithRetry(imap, missingUids, {
-          bodies: '',
-          struct: true
-        });
-        
-        const allMessages = [...existingEmails];
-        
-        for (const { parsed, seqno } of additionalMessages) {
-          const uid = missingUids[seqno - 1];
-          allMessages.push({ ...parsed, uid });
-        }
-        
-        resolve(allMessages);
-      } catch (error) {
-        console.error(`Error fetching additional messages for thread ${threadId}:`, error);
-        resolve(existingEmails);
-      }
+    } else {
+      writeNewThread(threadId, batchMessages);
+      newThreads.push(threadId);
+    }
+    
+    messagesSaved += batchMessages.length;
+  }
+  
+  return { newThreads, updatedThreads, messagesSaved };
+}
+
+function createInitialCheckpoint() {
+  return {
+    lastBatchEnd: 0,
+    uidRanges: [],
+    updatedThreads: [],
+    totalMessagesSaved: 0,
+    lastUpdated: new Date().toISOString()
+  };
+}
+
+function loadCheckpoint() {
+  if (!fs.existsSync(CHECKPOINT_FILE)) return null;
+  
+  try {
+    const data = fs.readFileSync(CHECKPOINT_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error(`Checkpoint corruption detected, starting fresh: ${error.message}`);
+    return null;
+  }
+}
+
+function saveCheckpoint(checkpoint) {
+  const tempFile = `${CHECKPOINT_FILE}.tmp`;
+  const data = JSON.stringify(checkpoint, null, 2);
+  
+  fs.writeFileSync(tempFile, data, 'utf8');
+  fs.renameSync(tempFile, CHECKPOINT_FILE);
+}
+
+async function fetchProgressive(imap, checkpoint) {
+  const box = await new Promise((resolve, reject) => {
+    imap.openBox('[Gmail]/All Mail', false, (err, box) => {
+      if (err) reject(err);
+      else resolve(box);
     });
   });
+  
+  const totalEmails = box.messages.total;
+  let startUid = checkpoint ? checkpoint.lastBatchEnd + 1 : 1;
+  let batchNumber = 0;
+  
+  console.log(`Found ${totalEmails} messages in [Gmail]/All Mail`);
+  console.log(`Starting fetch in ${Math.ceil(totalEmails / BATCH_SIZE)} batches of ${BATCH_SIZE} emails\n`);
+  
+  if (checkpoint) {
+    console.log(`Resuming from batch end UID: ${checkpoint.lastBatchEnd + 1}`);
+    console.log(`Total messages saved so far: ${checkpoint.totalMessagesSaved}\n`);
+  }
+  
+  while (startUid <= totalEmails) {
+    batchNumber++;
+    const batchStart = startUid;
+    const batchEnd = Math.min(startUid + BATCH_SIZE - 1, totalEmails);
+    const batchUids = [];
+    
+    for (let i = batchStart; i <= batchEnd; i++) {
+      batchUids.push(i);
+    }
+    
+    console.log(`=== Batch ${batchNumber} ===`);
+    console.log(`Processing UIDs: ${batchStart}-${batchEnd}`);
+    
+    try {
+      const { newThreads, updatedThreads, messagesSaved } = await processBatch(imap, batchUids);
+      
+      checkpoint.lastBatchEnd = batchEnd;
+      checkpoint.uidRanges.push(`${batchStart}-${batchEnd}`);
+      checkpoint.updatedThreads = [...new Set([...checkpoint.updatedThreads, ...newThreads, ...updatedThreads])];
+      checkpoint.totalMessagesSaved += messagesSaved;
+      checkpoint.lastUpdated = new Date().toISOString();
+      
+      saveCheckpoint(checkpoint);
+      
+      const percentage = Math.round((batchEnd / totalEmails) * 100);
+      console.log(`  New threads: ${newThreads.length}`);
+      console.log(`  Updated threads: ${updatedThreads.length}`);
+      console.log(`  Messages saved: ${messagesSaved}`);
+      console.log(`  Progress: ${batchEnd}/${totalEmails} (${percentage}%)`);
+      console.log(`  Overall messages saved: ${checkpoint.totalMessagesSaved}`);
+      
+      if (batchNumber % 10 === 0) {
+        console.log(`  Total batches completed: ${batchNumber}/${Math.ceil(totalEmails / BATCH_SIZE)}`);
+      }
+      
+      console.log('');
+      
+    } catch (error) {
+      console.error(`Error processing batch ${batchNumber}:`, error.message);
+      console.log(`Checkpoint saved at UID ${checkpoint.lastBatchEnd}, will resume from ${checkpoint.lastBatchEnd + 1}`);
+      throw error;
+    }
+    
+    startUid = batchEnd + 1;
+  }
+  
+  console.log(`\n✅ All batches processed successfully!`);
+  console.log(`📊 Total messages saved: ${checkpoint.totalMessagesSaved}`);
+  console.log(`🧵 Total unique threads: ${checkpoint.updatedThreads.length}`);
+  
+  fs.unlinkSync(CHECKPOINT_FILE);
+  console.log(`🗑️  Checkpoint file removed`);
+  console.log(`🎉 Thread fetching complete!`);
 }
 
 async function fetchThreads() {
   const imap = new Imap(imapConfig);
   
-  imap.once('ready', () => {
-    imap.openBox('[Gmail]/All Mail', false, async (err, box) => {
-      if (err) {
-        console.error('Error opening [Gmail]/All Mail:', err);
-        imap.end();
-        process.exit(1);
-      }
-      
-      console.log(`Found ${box.messages.total} messages in [Gmail]/All Mail`);
-      console.log('Starting fetch of all messages...\n');
-      
+  setupThreadsDirectory();
+  const checkpoint = loadCheckpoint();
+  
+  if (!checkpoint) {
+    console.log('Starting fresh - no checkpoint found\n');
+  }
+  
+  await new Promise((resolve, reject) => {
+    imap.once('ready', async () => {
       try {
-        const allUids = [];
-        for (let i = 1; i <= box.messages.total; i++) {
-          allUids.push(i);
-        }
-        
-        console.log('Phase 1: Fetching all messages from All Mail...');
-        const allMessages = await fetchWithRetry(imap, allUids, {
-          bodies: '',
-          struct: true
-        });
-        
-        console.log(`✓ Fetched ${allMessages.length} messages\n`);
-        
-        const threadGroups = new Map();
-        const messageToThread = new Map();
-        
-        allMessages.forEach(({ parsed, seqno }) => {
-          const uid = allUids[seqno - 1];
-          const email = { ...parsed, uid };
-          
-          if (email.messageId) {
-            messageToThread.set(email.messageId, email);
-          }
-          
-          if (email.uid) {
-            const threadId = email.uid['x-gm-thrid'];
-            if (threadId) {
-              if (!threadGroups.has(threadId)) {
-                threadGroups.set(threadId, []);
-              }
-              threadGroups.get(threadId).push(email);
-            }
-          }
-        });
-        
-        console.log(`Phase 2: Discovered ${threadGroups.size} unique threads`);
-        console.log('Phase 3: Verifying thread completeness...\n');
-        
-        const threadsDir = setupThreadsDirectory();
-        console.log(`📁 Threads will be saved to: ${threadsDir}/\n`);
-        
-        let threadIndex = 0;
-        let totalMessagesSaved = 0;
-        const progressInterval = Math.max(1, Math.floor(threadGroups.size / 10));
-        
-        for (const [threadId, messages] of threadGroups.entries()) {
-          try {
-            threadIndex++;
-            
-            const verifiedMessages = await verifyThreadCompleteness(imap, threadId, messages);
-            
-            const sortedMessages = verifiedMessages.sort((a, b) => {
-              const aDate = a.date ? new Date(a.date) : new Date(0);
-              const bDate = b.date ? new Date(b.date) : new Date(0);
-              return aDate - bDate;
-            });
-            
-            const subject = sortedMessages[0]?.subject || 'No Subject';
-            const threadPath = createThreadDirectory(threadId, subject);
-            const metadata = writeThreadMetadata(threadId, sortedMessages, threadPath);
-            
-            let messageIndex = 1;
-            for (const message of sortedMessages) {
-              try {
-                await saveMessage(message, messageIndex, sortedMessages.length, metadata, threadPath);
-                totalMessagesSaved++;
-                messageIndex++;
-              } catch (error) {
-                console.error(`✗ Error saving message ${messageIndex} in thread ${threadId}: ${error.message}`);
-              }
-            }
-            
-            if (threadIndex % progressInterval === 0 || threadIndex === threadGroups.size) {
-              console.log(`✓ Progress: ${threadIndex}/${threadGroups.size} threads processed`);
-              console.log(`  Total messages saved: ${totalMessagesSaved}`);
-              
-              if (threadIndex % (progressInterval * 2) === 0) {
-                console.log(`  Last thread: ${subject.substring(0, 50)}... (${sortedMessages.length} messages)`);
-              }
-            }
-          } catch (error) {
-            console.error(`✗ Error processing thread ${threadId}: ${error.message}`);
-          }
-        }
-        
-        console.log(`\n✅ Successfully processed ${threadIndex}/${threadGroups.size} threads`);
-        console.log(`📊 Total messages saved: ${totalMessagesSaved}`);
-        console.log(`📁 Threads saved to: ${threadsDir}/`);
-        console.log(`🎉 Thread fetching complete!`);
-        
+        await fetchProgressive(imap, checkpoint || createInitialCheckpoint());
         imap.end();
+        resolve();
       } catch (error) {
         console.error('Error during thread fetching:', error);
         imap.end();
-        process.exit(1);
+        reject(error);
       }
     });
+    
+    imap.once('error', (err) => {
+      console.error('IMAP connection error:', err);
+      process.exit(1);
+    });
+    
+    imap.once('end', () => {});
+    
+    imap.connect();
   });
-  
-  imap.once('error', (err) => {
-    console.error('IMAP connection error:', err);
-    process.exit(1);
-  });
-  
-  imap.once('end', () => {});
-  
-  imap.connect();
 }
 
 if (!process.env.GMAIL_EMAIL || !process.env.GMAIL_APP_PASSWORD) {
@@ -464,6 +570,6 @@ if (!process.env.GMAIL_EMAIL || !process.env.GMAIL_APP_PASSWORD) {
   process.exit(1);
 }
 
-console.log('Starting complete email thread fetcher...');
-console.log('Fetching ALL emails from [Gmail]/All Mail and organizing by thread\n');
+console.log('Starting progressive email thread fetcher...');
+console.log(`Fetching ALL emails from [Gmail]/All Mail in batches of ${BATCH_SIZE}\n`);
 fetchThreads();
