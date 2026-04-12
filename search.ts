@@ -1,6 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-const SEARCH_QUERY = 'What was the Browserbase Birthday email about?';
+const SEARCH_QUERY = 'what is Venture Demo Day';
 
 const SEARCH_PROMPT = `Search through the emails in the emails/ directory and find relevant information based on this query:
 
