@@ -5,8 +5,6 @@ import TurndownService from 'turndown';
 import fs from 'fs';
 import path from 'path';
 
-const CHECKPOINT_FILE = 'threads-progress.json';
-
 const imapConfig = {
   user: process.env.GMAIL_EMAIL,
   password: process.env.GMAIL_APP_PASSWORD,
@@ -180,34 +178,6 @@ async function fetchWithRetry(imap, uids, options, retries = MAX_RETRIES) {
   }
 }
 
-function createInitialCheckpoint() {
-  return {
-    lastProcessedUid: 0,
-    totalMessagesSaved: 0,
-    lastUpdated: new Date().toISOString()
-  };
-}
-
-function loadCheckpoint() {
-  if (!fs.existsSync(CHECKPOINT_FILE)) return null;
-  
-  try {
-    const data = fs.readFileSync(CHECKPOINT_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    console.error(`Checkpoint corruption detected, starting fresh: ${error.message}`);
-    return null;
-  }
-}
-
-function saveCheckpoint(checkpoint) {
-  const tempFile = `${CHECKPOINT_FILE}.tmp`;
-  const data = JSON.stringify(checkpoint, null, 2);
-  
-  fs.writeFileSync(tempFile, data, 'utf8');
-  fs.renameSync(tempFile, CHECKPOINT_FILE);
-}
-
 async function processEmail(imap, uid) {
   const messages = await fetchWithRetry(imap, [uid], {
     bodies: '',
@@ -240,7 +210,7 @@ async function processEmail(imap, uid) {
   return { saved: true, filepath };
 }
 
-async function fetchProgressive(imap, checkpoint) {
+async function fetchProgressive(imap) {
   const box = await new Promise((resolve, reject) => {
     imap.openBox('[Gmail]/All Mail', false, (err, box) => {
       if (err) reject(err);
@@ -249,15 +219,11 @@ async function fetchProgressive(imap, checkpoint) {
   });
   
   const totalEmails = box.messages.total;
-  let currentUid = checkpoint ? checkpoint.lastProcessedUid + 1 : 1;
+  let currentUid = 1;
+  let totalMessagesSaved = 0;
   
   console.log(`Found ${totalEmails} messages in [Gmail]/All Mail`);
   console.log(`Starting fetch, processing each email individually\n`);
-  
-  if (checkpoint) {
-    console.log(`Resuming from UID: ${currentUid}`);
-    console.log(`Total messages saved so far: ${checkpoint.totalMessagesSaved}\n`);
-  }
   
   while (currentUid <= totalEmails) {
     const percentage = Math.round((currentUid / totalEmails) * 100);
@@ -267,24 +233,15 @@ async function fetchProgressive(imap, checkpoint) {
       const result = await processEmail(imap, currentUid);
       
       if (result.saved) {
-        checkpoint.totalMessagesSaved++;
-      }
-      
-      checkpoint.lastProcessedUid = currentUid;
-      checkpoint.lastUpdated = new Date().toISOString();
-      
-      saveCheckpoint(checkpoint);
-      
-      if (result.saved) {
+        totalMessagesSaved++;
         console.log(`  Saved: ${path.basename(result.filepath)}`);
-        console.log(`  Total saved: ${checkpoint.totalMessagesSaved}`);
+        console.log(`  Total saved: ${totalMessagesSaved}`);
       }
       
       console.log('');
       
     } catch (error) {
       console.error(`Error processing email ${currentUid}:`, error.message);
-      console.log(`Checkpoint saved at UID ${checkpoint.lastProcessedUid}, will resume from ${checkpoint.lastProcessedUid + 1}`);
       throw error;
     }
     
@@ -292,10 +249,7 @@ async function fetchProgressive(imap, checkpoint) {
   }
   
   console.log(`\n✅ All emails processed successfully!`);
-  console.log(`📊 Total messages saved: ${checkpoint.totalMessagesSaved}`);
-  
-  fs.unlinkSync(CHECKPOINT_FILE);
-  console.log(`🗑️  Checkpoint file removed`);
+  console.log(`📊 Total messages saved: ${totalMessagesSaved}`);
   console.log(`🎉 Email fetching complete!`);
 }
 
@@ -303,16 +257,11 @@ async function fetchThreads() {
   const imap = new Imap(imapConfig);
   
   setupThreadsDirectory();
-  const checkpoint = loadCheckpoint();
-  
-  if (!checkpoint) {
-    console.log('Starting fresh - no checkpoint found\n');
-  }
   
   await new Promise((resolve, reject) => {
     imap.once('ready', async () => {
       try {
-        await fetchProgressive(imap, checkpoint || createInitialCheckpoint());
+        await fetchProgressive(imap);
         imap.end();
         resolve();
       } catch (error) {
