@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import Imap from 'node-imap';
 import { simpleParser } from 'mailparser';
+import TurndownService from 'turndown';
+import fs from 'fs';
+import path from 'path';
 
 const imapConfig = {
   user: process.env.GMAIL_EMAIL,
@@ -10,69 +13,110 @@ const imapConfig = {
   tls: true
 };
 
-function printEmail(email, index, total) {
-  console.log(`=== Email ${index + 1}/${total} ===`);
-  console.log('HEADERS:');
+const turndownService = new TurndownService({
+  headingStyle: 'atx',
+  codeBlockStyle: 'fenced',
+  bulletListMarker: '-',
+  linkStyle: 'inlined'
+});
 
+function sanitizeFilename(subject) {
+  if (!subject) return 'no-subject';
+  
+  return subject
+    .toLowerCase()
+    .replace(/[^a-z0-9\s\-_]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .substring(0, 100);
+}
+
+function setupEmailsDirectory() {
+  const emailsDir = 'emails';
+  
+  if (fs.existsSync(emailsDir)) {
+    fs.rmSync(emailsDir, { recursive: true, force: true });
+  }
+  
+  fs.mkdirSync(emailsDir, { recursive: true });
+  
+  return emailsDir;
+}
+
+function saveEmail(email, index, total, emailsDir) {
+  let content = '';
+  
+  content += `=== Email ${index + 1}/${total} ===\n`;
+  content += 'HEADERS:\n';
+  
   if (email.from) {
-    console.log(`- From: ${email.from.value.map(addr => `${addr.name || ''} <${addr.address}>`).join(', ')}`);
+    content += `- From: ${email.from.value.map(addr => `${addr.name || ''} <${addr.address}>`).join(', ')}\n`;
   }
-
+  
   if (email.to) {
-    console.log(`- To: ${email.to.value.map(addr => `${addr.name || ''} <${addr.address}>`).join(', ')}`);
+    content += `- To: ${email.to.value.map(addr => `${addr.name || ''} <${addr.address}>`).join(', ')}\n`;
   }
-
+  
   if (email.cc) {
-    console.log(`- Cc: ${email.cc.value.map(addr => `${addr.name || ''} <${addr.address}>`).join(', ')}`);
+    content += `- Cc: ${email.cc.value.map(addr => `${addr.name || ''} <${addr.address}>`).join(', ')}\n`;
   }
-
+  
   if (email.subject) {
-    console.log(`- Subject: ${email.subject}`);
+    content += `- Subject: ${email.subject}\n`;
   }
-
+  
   if (email.date) {
-    console.log(`- Date: ${email.date.toISOString()}`);
+    content += `- Date: ${email.date.toISOString()}\n`;
   }
-
+  
   if (email.messageId) {
-    console.log(`- Message-ID: ${email.messageId}`);
+    content += `- Message-ID: ${email.messageId}\n`;
   }
-
+  
   if (email.inReplyTo) {
-    console.log(`- In-Reply-To: ${email.inReplyTo}`);
+    content += `- In-Reply-To: ${email.inReplyTo}\n`;
   }
-
+  
   if (email.references) {
     const refs = Array.isArray(email.references)
       ? email.references.join(', ')
       : String(email.references);
-    console.log(`- References: ${refs}`);
+    content += `- References: ${refs}\n`;
   }
-
-  console.log('');
-
+  
+  content += '\n';
+  
+  content += 'BODY (MARKDOWN):\n';
+  
   if (email.html) {
-    console.log('BODY HTML:');
-    console.log(email.html);
-    console.log('');
+    content += turndownService.turndown(email.html);
+  } else if (email.text) {
+    content += email.text;
+  } else {
+    content += 'No body content available';
   }
-
-  if (email.text) {
-    console.log('BODY PLAIN TEXT:');
-    console.log(email.text);
-    console.log('');
-  }
-
+  
+  content += '\n\n';
+  
   if (email.attachments && email.attachments.length > 0) {
-    console.log('ATTACHMENTS:');
+    content += 'ATTACHMENTS:\n';
     email.attachments.forEach(att => {
-      console.log(`- ${att.filename} (${att.size} bytes, ${att.contentType})`);
+      content += `- ${att.filename} (${att.size} bytes, ${att.contentType})\n`;
     });
-    console.log('');
+    content += '\n';
   }
-
-  console.log('---');
-  console.log('');
+  
+  content += '---\n\n';
+  
+  const subject = email.subject || 'no-subject';
+  const safeFilename = sanitizeFilename(subject);
+  const timestamp = email.date ? email.date.getTime() : Date.now();
+  const filename = `${timestamp}-${safeFilename}.md`;
+  const filepath = path.join(emailsDir, filename);
+  
+  fs.writeFileSync(filepath, content, 'utf8');
+  
+  return { filename, subject };
 }
 
 function fetchEmails() {
@@ -86,7 +130,7 @@ function fetchEmails() {
         process.exit(1);
       }
 
-      const fetchCount = 5;
+      const fetchCount = 100;
 
       imap.search([['X-GM-RAW', 'category:primary']], (err, results) => {
         if (err) {
@@ -132,9 +176,35 @@ function fetchEmails() {
                     return bDate - aDate;
                   });
 
+                  console.log('Setting up emails directory...');
+                  const emailsDir = setupEmailsDirectory();
+                  console.log(`📁 Emails will be saved to: ${emailsDir}/\n`);
+
+                  let savedCount = 0;
+                  const totalEmails = sortedEmails.length;
+                  const progressInterval = Math.max(1, Math.floor(totalEmails / 10));
+
+                  console.log(`🔄 Processing ${totalEmails} emails...\n`);
+
                   sortedEmails.forEach((email, index) => {
-                    printEmail(email, index, sortedEmails.length);
+                    try {
+                      const result = saveEmail(email, index, totalEmails, emailsDir);
+                      savedCount++;
+                      
+                      if ((index + 1) % progressInterval === 0 || index + 1 === totalEmails) {
+                        console.log(`✓ Progress: ${savedCount}/${totalEmails} emails saved`);
+                        
+                        if ((index + 1) % (progressInterval * 2) === 0) {
+                          console.log(`  Last processed: ${result.subject.substring(0, 50)}...`);
+                        }
+                      }
+                    } catch (error) {
+                      console.error(`✗ Error saving email ${index + 1}: ${error.message}`);
+                    }
                   });
+
+                  console.log(`\n✅ Successfully saved ${savedCount}/${totalEmails} emails to ${emailsDir}/`);
+                  console.log(`📊 Processing complete!`);
 
                   imap.end();
                 }
@@ -170,9 +240,7 @@ function fetchEmails() {
     process.exit(1);
   });
 
-  imap.once('end', () => {
-    console.log('Connection ended');
-  });
+  imap.once('end', () => {});
 
   imap.connect();
 }
@@ -183,5 +251,5 @@ if (!process.env.GMAIL_EMAIL || !process.env.GMAIL_APP_PASSWORD) {
   process.exit(1);
 }
 
-console.log('Fetching 5 most recent emails from Gmail Primary category...');
+console.log('Fetching 100 most recent emails from Gmail Primary category...\n');
 fetchEmails();
