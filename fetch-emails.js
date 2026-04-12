@@ -43,7 +43,10 @@ function printEmail(email, index, total) {
   }
 
   if (email.references) {
-    console.log(`- References: ${email.references.join(', ')}`);
+    const refs = Array.isArray(email.references)
+      ? email.references.join(', ')
+      : String(email.references);
+    console.log(`- References: ${refs}`);
   }
 
   console.log('');
@@ -84,65 +87,80 @@ function fetchEmails() {
       }
 
       const fetchCount = 5;
-      const range = `${Math.max(1, box.messages.total - fetchCount + 1)}:${box.messages.total}`;
 
-      const fetch = imap.fetch(range, {
-        bodies: '',
-        struct: true
-      });
-
-      const emails = [];
-      let count = 0;
-
-      fetch.on('message', (msg, seqno) => {
-        let buffer = '';
-
-        msg.on('body', (stream, info) => {
-          stream.on('data', (chunk) => {
-            buffer += chunk.toString('utf8');
-          });
-
-          stream.once('end', async () => {
-            try {
-              const parsed = await simpleParser(buffer);
-              emails.push(parsed);
-              count++;
-
-              if (count === Math.min(fetchCount, box.messages.total)) {
-                const sortedEmails = emails.sort((a, b) => {
-                  const aDate = a.date ? new Date(a.date) : new Date(0);
-                  const bDate = b.date ? new Date(b.date) : new Date(0);
-                  return bDate - aDate;
-                });
-
-                sortedEmails.forEach((email, index) => {
-                  printEmail(email, index, sortedEmails.length);
-                });
-
-                imap.end();
-              }
-            } catch (parseError) {
-              console.error('Error parsing email:', parseError);
-            }
-          });
-        });
-
-        msg.once('error', (err) => {
-          console.error(`Error fetching message ${seqno}:`, err);
-        });
-      });
-
-      fetch.once('error', (err) => {
-        console.error('Fetch error:', err);
-        imap.end();
-        process.exit(1);
-      });
-
-      fetch.once('end', () => {
-        if (count === 0) {
-          console.log('No emails found in INBOX');
+      imap.search([['X-GM-RAW', 'category:primary']], (err, results) => {
+        if (err) {
+          console.error('Search error:', err);
           imap.end();
+          process.exit(1);
         }
+
+        if (results.length === 0) {
+          console.log('No emails found in Primary category');
+          imap.end();
+          return;
+        }
+
+        const recentResults = results.slice(-fetchCount);
+
+        const fetch = imap.fetch(recentResults, {
+          bodies: '',
+          struct: true
+        });
+
+        const emails = [];
+        let count = 0;
+
+        fetch.on('message', (msg, seqno) => {
+          let buffer = '';
+
+          msg.on('body', (stream, info) => {
+            stream.on('data', (chunk) => {
+              buffer += chunk.toString('utf8');
+            });
+
+            stream.once('end', async () => {
+              try {
+                const parsed = await simpleParser(buffer);
+                emails.push(parsed);
+                count++;
+
+                if (count === recentResults.length) {
+                  const sortedEmails = emails.sort((a, b) => {
+                    const aDate = a.date ? new Date(a.date) : new Date(0);
+                    const bDate = b.date ? new Date(b.date) : new Date(0);
+                    return bDate - aDate;
+                  });
+
+                  sortedEmails.forEach((email, index) => {
+                    printEmail(email, index, sortedEmails.length);
+                  });
+
+                  imap.end();
+                }
+              } catch (parseError) {
+                console.error('Error parsing email:', parseError);
+              }
+            });
+          });
+
+          msg.once('error', (err) => {
+            console.error(`Error fetching message ${seqno}:`, err);
+          });
+        });
+
+        fetch.once('error', (err) => {
+          console.error('Fetch error:', err);
+          imap.end();
+          process.exit(1);
+        });
+
+        fetch.once('end', () => {
+          if (count === 0) {
+            console.log('No emails fetched');
+            imap.end();
+          }
+        });
       });
     });
   });
@@ -165,5 +183,5 @@ if (!process.env.GMAIL_EMAIL || !process.env.GMAIL_APP_PASSWORD) {
   process.exit(1);
 }
 
-console.log('Fetching 5 most recent emails from Gmail...');
+console.log('Fetching 5 most recent emails from Gmail Primary category...');
 fetchEmails();
