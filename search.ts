@@ -1,24 +1,46 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
+const SEARCH_QUERY = 'What was the Browserbase Birthday email about?';
+
 const SEARCH_PROMPT = `Search through the emails in the emails/ directory and find relevant information based on this query:
 
-"What was the email from Alex Xu about?"
+"${SEARCH_QUERY}"
 
 Please:
 1. Use Glob to find all markdown files in the emails/ directory
 2. Read the relevant email files
 3. Use Grep to search for specific keywords if needed
-4. Provide a comprehensive summary of your findings, including:
-   - Email subjects
-   - Senders
-   - Dates
-   - Key content relevant to the query
-   - Any action items or deadlines mentioned
+4. Provide your answer as plain, conversational text without ANY formatting
 
-Be thorough and provide specific details from the emails you find.`;
+IMPORTANT: Do NOT use bold text, headers, bullet points, numbered lists, code blocks, or ANY markdown formatting. Write everything in plain, readable paragraphs. Just tell me what you found in a natural, conversational way.`;
+
+function getToolIcon(toolName: string): string {
+  const iconMap: { [key: string]: string } = {
+    'Glob': '🔎',
+    'Read': '📖',
+    'Grep': '🔍',
+    'Bash': '⚙️',
+    'Write': '📝',
+    'Edit': '✏️'
+  };
+  return iconMap[toolName] || '⚙️';
+}
+
+function getToolAction(toolName: string): string {
+  const actionMap: { [key: string]: string } = {
+    'Glob': 'Finding email files...',
+    'Read': 'Reading email content...',
+    'Grep': 'Searching content...',
+    'Bash': 'Executing command...',
+    'Write': 'Creating file...',
+    'Edit': 'Modifying file...'
+  };
+  return actionMap[toolName] || 'Processing...';
+}
 
 async function main() {
-  console.log('🤖 Starting Claude Agent SDK search...\n');
+  console.log(`🔍 Searching emails for: "${SEARCH_QUERY}"`);
+  console.log('────────────────────────────────────────────────────────────\n');
   
   try {
     for await (const message of query({
@@ -27,39 +49,23 @@ async function main() {
         allowedTools: ['Read', 'Glob', 'Grep']
       }
     })) {
-      if (message.type === 'system') {
-        if ('result' in message) {
-          console.log(message.result);
-        }
-      } else if (message.type === 'user') {
-        if ('message' in message) {
-          console.log(`[User]: ${JSON.stringify(message.message)}`);
-        }
-      } else if (message.type === 'assistant') {
+      if (message.type === 'assistant') {
         const assistantMessage = message as any;
         if (assistantMessage.message && assistantMessage.message.content) {
           for (const block of assistantMessage.message.content) {
             if (block.type === 'text') {
               console.log(block.text);
             } else if (block.type === 'tool_use') {
-              console.log(`[Tool: ${block.name}]`);
-              console.log(JSON.stringify(block.input, null, 2));
-            } else if (block.type === 'tool_result') {
-              console.log(`[Tool Result]`);
-              if (typeof block.content === 'string') {
-                console.log(block.content);
-              } else {
-                console.log(JSON.stringify(block.content, null, 2));
-              }
+              const icon = getToolIcon(block.name);
+              const action = getToolAction(block.name);
+              console.log(`${icon} ${block.name}: ${action}`);
             }
           }
         }
-      } else if ('result' in message) {
-        console.log(message.result);
       }
     }
     
-    console.log('\n✅ Search completed successfully!');
+    console.log('\n────────────────────────────────────────────────────────────');
   } catch (error) {
     console.error('❌ Error during search:', error);
     process.exit(1);

@@ -5,6 +5,8 @@ import TurndownService from 'turndown';
 import fs from 'fs';
 import path from 'path';
 
+const fetchCount = 3000;
+
 const imapConfig = {
   user: process.env.GMAIL_EMAIL,
   password: process.env.GMAIL_APP_PASSWORD,
@@ -130,7 +132,6 @@ function fetchEmails() {
         process.exit(1);
       }
 
-      const fetchCount = 100;
 
       imap.search([['X-GM-RAW', 'category:primary']], (err, results) => {
         if (err) {
@@ -251,5 +252,5 @@ if (!process.env.GMAIL_EMAIL || !process.env.GMAIL_APP_PASSWORD) {
   process.exit(1);
 }
 
-console.log('Fetching 100 most recent emails from Gmail Primary category...\n');
+console.log(`Fetching ${fetchCount} most recent emails from Gmail Primary category...\n`);
 fetchEmails();
