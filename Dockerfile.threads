@@ -6,7 +6,7 @@ RUN npm install -g pnpm
 
 WORKDIR /app
 
-COPY . .
+COPY package.json pnpm-lock.yaml tsconfig.json search-threads.ts start-search.sh ./
 
 RUN pnpm install --frozen-lockfile
 
