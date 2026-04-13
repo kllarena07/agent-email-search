@@ -10,7 +10,8 @@
     "start": "bash start.sh",
     "fetch": "node fetch-emails.js",
     "fetch-threads": "node fetch-threads.js",
-    "search": "node dist/search.js"
+    "search": "node dist/search.js",
+    "test-thread": "node test-thread.js"
   },
   "keywords": [],
   "author": "",
