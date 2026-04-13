@@ -3,12 +3,12 @@
 set -e
 
 echo "==================================="
-echo "Email Agent Search - Starting..."
+echo "Email Thread Search - Starting..."
 echo "==================================="
 
 echo ""
-echo "Step 1: Fetching emails from Gmail..."
-node fetch-emails.js
+echo "Step 1: Fetching ALL emails as threads..."
+node fetch-threads.js
 
 echo ""
 echo "Step 2: Building TypeScript..."
@@ -16,9 +16,9 @@ pnpm build
 
 echo ""
 echo "Step 3: Running Claude Agent SDK search..."
-node dist/search.js
+node dist/search-threads.js
 
 echo ""
 echo "==================================="
-echo "Email Agent Search - Completed!"
+echo "Email Thread Search - Completed!"
 echo "==================================="
