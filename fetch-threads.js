@@ -341,24 +341,13 @@ async function checkDailyLimit(state) {
 }
 
 async function fetchBatches(imap) {
-  await new Promise((resolve, reject) => {
-    imap.search([['X-GM-RAW', '-in:spam -in:trash']], (err, uids) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      if (uids.length === 0) {
-        console.log('No emails found');
-        resolve([]);
-        return;
-      }
-
-      console.log(`Found ${uids.length} emails in [Gmail]/All Mail (excluding spam/trash)\n`);
-      resolve(uids);
+  const box = await new Promise((resolve, reject) => {
+    imap.openBox('[Gmail]/All Mail', false, (err, box) => {
+      if (err) reject(err);
+      else resolve(box);
     });
   });
-
+  
   let state = loadState();
   state = checkDailyReset(state);
 
