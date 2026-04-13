@@ -8,9 +8,11 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc",
     "start": "bash start.sh",
+    "start-search": "bash start-search.sh",
     "fetch": "node fetch-emails.js",
     "fetch-threads": "node fetch-threads.js",
     "search": "node dist/search.js",
+    "search-threads": "node dist/search-threads.js",
     "test-thread": "node test-thread.js"
   },
   "keywords": [],

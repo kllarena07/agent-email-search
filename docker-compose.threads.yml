@@ -1,6 +1,8 @@
 services:
   email-thread-search:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.threads
     env_file:
       - .env
     volumes:
