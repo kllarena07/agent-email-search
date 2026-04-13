@@ -7,15 +7,17 @@ if (!SEARCH_QUERY || SEARCH_QUERY.trim() === '') {
   process.exit(1);
 }
 
-const SEARCH_PROMPT = `Search through the emails in the threads/ directory and find relevant information based on this query:
+const SEARCH_PROMPT = `Search the threads/ directory to answer this query:
 
 "${SEARCH_QUERY}"
 
-Please:
-1. Use Glob to find all markdown files in the threads/ directory
-2. Read the relevant email files
-3. Use Grep to search for specific keywords if needed
-4. Provide your answer as plain, conversational text without ANY formatting
+Be efficient and minimize tool calls:
+1. First, use Grep to search for relevant keywords across all thread files
+2. Based on Grep results, identify the most relevant thread files
+3. Read ONLY the most relevant files to gather detailed information
+4. Answer directly based on what you find
+
+Do NOT glob all files first. Use Grep to narrow down which files to read. Provide your answer as plain, conversational text without ANY formatting.
 
 IMPORTANT: Do NOT use bold text, headers, bullet points, numbered lists, code blocks, or ANY markdown formatting. Write everything in plain, readable paragraphs. Just tell me what you found in a natural, conversational way.`;
 
