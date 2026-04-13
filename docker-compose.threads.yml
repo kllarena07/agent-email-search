@@ -6,5 +6,5 @@ services:
     env_file:
       - .env
     volumes:
-      - ./:/app
+      - ./threads:/app/threads
     working_dir: /app
