@@ -4,3 +4,4 @@ emails/
 dist/
 .DS_Store
 .env.old
+threads/
